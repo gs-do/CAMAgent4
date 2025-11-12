@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -74,30 +75,37 @@ async def on_chat_start():
 @cl.on_message
 async def on_message(message: cl.Message):
     thread_id = cl.user_session.get("thread_id")
-    
+    user = cl.user_session.get("user")    
+
     try:
-        # Show thinking message to user
         msg = await cl.Message("thinking...", author="agent").send()
 
-        project_client.agents.messages.create(
+        # Run blocking Azure calls in background thread
+        await asyncio.to_thread(
+            project_client.agents.messages.create,
             thread_id=thread_id,
             role="user",
-            content=message.content,
+            content=message.content + f" Requestor is {user.identifier}",
         )
         
-        # Run the agent to process tne message in the thread
-        run = project_client.agents.runs.create_and_process(thread_id=thread_id, agent_id=agent_id)
+        # Run blocking agent processing in background thread
+        run = await asyncio.to_thread(
+            project_client.agents.runs.create_and_process,
+            thread_id=thread_id,
+            agent_id=agent_id
+        )
+        
         print(f"Run finished with status: {run.status}")
 
-        # Check if you got "Rate limit is exceeded.", then you want to increase the token limit
         if run.status == "failed":
             raise Exception(run.last_error)
 
-        response_text = "No response from agent"  # Default value
-        if run.status == "failed":
-            response_text = f"Run failed: {run.last_error}"
-        else:
-            messages = project_client.agents.messages.list(thread_id=thread_id)
+        response_text = "No response from agent"
+        if run.status != "failed":
+            messages = await asyncio.to_thread(
+                project_client.agents.messages.list,
+                thread_id=thread_id
+            )
             for msg1 in messages:
                 if msg1.text_messages:
                     last_text = msg1.text_messages[-1]
